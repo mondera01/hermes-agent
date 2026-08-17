@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 
 SETUP_PATH = (
@@ -83,6 +88,49 @@ class GoogleWorkspaceSetupServicesTest(unittest.TestCase):
             ),
             [],
         )
+
+    def test_get_auth_url_repairs_missing_scope_query_parameter(self):
+        setup = self.load_setup_module()
+        setup.CLIENT_SECRET_PATH.write_text(json.dumps({"installed": {"client_id": "test"}}))
+        setup._ensure_deps = lambda: None
+
+        class FakeFlow:
+            code_verifier = "verifier-1"
+
+            @classmethod
+            def from_client_secrets_file(cls, path, scopes, redirect_uri, autogenerate_code_verifier):
+                self = cls()
+                self.scopes = scopes
+                return self
+
+            def authorization_url(self, **kwargs):
+                return "https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=test", "state-1"
+
+        flow_mod = types.ModuleType("google_auth_oauthlib.flow")
+        flow_mod.Flow = FakeFlow
+        package_mod = types.ModuleType("google_auth_oauthlib")
+        package_mod.flow = flow_mod
+        old_package = sys.modules.get("google_auth_oauthlib")
+        old_flow = sys.modules.get("google_auth_oauthlib.flow")
+        sys.modules["google_auth_oauthlib"] = package_mod
+        sys.modules["google_auth_oauthlib.flow"] = flow_mod
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                setup.get_auth_url(services="email")
+        finally:
+            if old_package is None:
+                sys.modules.pop("google_auth_oauthlib", None)
+            else:
+                sys.modules["google_auth_oauthlib"] = old_package
+            if old_flow is None:
+                sys.modules.pop("google_auth_oauthlib.flow", None)
+            else:
+                sys.modules["google_auth_oauthlib.flow"] = old_flow
+
+        url = buf.getvalue().strip()
+        scopes = parse_qs(urlparse(url).query).get("scope", [""])[0].split()
+        self.assertEqual(scopes, setup.resolve_service_scopes("email"))
 
     def test_unknown_service_name_is_rejected(self):
         setup = self.load_setup_module()

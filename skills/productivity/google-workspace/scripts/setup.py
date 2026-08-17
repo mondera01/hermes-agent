@@ -136,6 +136,18 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
     )
 
 
+def _ensure_scope_query_param(auth_url: str, scopes: list[str]) -> str:
+    """Return an auth URL that always contains the requested OAuth scope query."""
+    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+    parsed = urlparse(auth_url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    if query.get("scope", [""])[0].strip():
+        return auth_url
+    query["scope"] = [" ".join(scopes)]
+    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+
 def install_deps():
     """Install Google API packages if missing. Returns True on success."""
     try:
@@ -405,6 +417,7 @@ def get_auth_url(services: str | None = None):
         access_type="offline",
         prompt="consent",
     )
+    auth_url = _ensure_scope_query_param(auth_url, requested_scopes)
     _save_pending_auth(state=state, code_verifier=flow.code_verifier, scopes=requested_scopes)
     # Print just the URL so the agent can extract it cleanly
     print(auth_url)
